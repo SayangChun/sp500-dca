@@ -1,0 +1,49 @@
+{
+  "updated_at": "2026-09-14T10:43:50+08:00",
+  "start_date": "2026-08-17",
+  "latest_nav_date": "2026-09-10",
+  "source": "天天基金（东方财富）历史净值接口",
+  "funds": [
+    {
+      "code": "017641",
+      "name": "摩根标普500指数(QDII)人民币A",
+      "short_name": "摩根标普500 A",
+      "share_class": "A",
+      "daily_amount": 9.99,
+      "trading_days": 19,
+      "shares": 111.18,
+      "invested": 189.81,
+      "avg_cost": 1.7072,
+      "latest_nav": 1.6882,
+      "latest_nav_date": "2026-09-10",
+      "market_value": 187.7,
+      "profit": -2.11,
+      "return_rate": -0.011129
+    },
+    {
+      "code": "019305",
+      "name": "摩根标普500指数(QDII)人民币C",
+      "short_name": "摩根标普500 C",
+      "share_class": "C",
+      "daily_amount": 10.0,
+      "trading_days": 19,
+      "shares": 112.35,
+      "invested": 190.0,
+      "avg_cost": 1.6911,
+      "latest_nav": 1.6721,
+      "latest_nav_date": "2026-09-10",
+      "market_value": 187.86,
+      "profit": -2.14,
+      "return_rate": -0.011241
+    }
+  ],
+  "total": {
+    "daily_amount": 19.99,
+    "trading_days": 19,
+    "invested": 379.81,
+    "shares": 223.53,
+    "market_value": 375.56,
+    "profit": -4.25,
+    "return_rate": -0.01119
+  }
+}

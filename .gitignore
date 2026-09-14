@@ -1,0 +1,15 @@
+# 本地临时文件
+pz_*.js
+tmp_out.txt
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# 编辑器
+.vscode/
+.idea/
+.DS_Store
+
+# WorkBuddy 本地数据
+.workbuddy-ai/

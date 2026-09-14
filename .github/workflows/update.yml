@@ -1,0 +1,71 @@
+name: 更新定投数据
+
+on:
+  schedule:
+    # 每天两次（北京时间 08:30 与 20:30），捕捉最新披露的净值
+    - cron: "30 0 * * *"
+    - cron: "30 12 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: dca-update
+  cancel-in-progress: false
+
+jobs:
+  update:
+    name: 抓取净值并重算持仓
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v4
+
+      - name: 安装 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 更新数据
+        run: python scripts/update.py
+
+      - name: 提交变更
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "数据无变化，跳过提交"
+          else
+            git commit -m "chore(data): 更新定投数据 $(TZ=Asia/Shanghai date +'%Y-%m-%d %H:%M')"
+            git push
+          fi
+
+  deploy:
+    name: 发布看板到 GitHub Pages
+    needs: update
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v4
+
+      - name: 配置 Pages
+        uses: actions/configure-pages@v5
+        with:
+          enablement: true
+
+      - name: 上传看板
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: reports
+
+      - name: 部署
+        id: deployment
+        uses: actions/deploy-pages@v4
