@@ -52,7 +52,11 @@ jobs:
     name: 发布看板到 GitHub Pages
     needs: update
     runs-on: ubuntu-latest
+    # Pages 站点需在仓库 Settings → Pages 中把 Source 设为 "GitHub Actions" 后才能部署；
+    # 未启用时本作业会失败，但不影响上面的数据更新，故设为不阻断。
+    continue-on-error: true
     permissions:
+      contents: read
       pages: write
       id-token: write
     environment:

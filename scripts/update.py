@@ -455,10 +455,10 @@ def render_readme(
     total: dict,
     timeline: list[dict],
     status_sources: dict[str, str],
+    updated: str,
 ) -> str:
     cur = config.get("currency_symbol", "¥")
     latest_date = max((f["latest_nav_date"] for f in funds if f["latest_nav_date"]), default="-")
-    updated = datetime.now(CST).strftime("%Y-%m-%d %H:%M (UTC+8)")
     lag = config.get("confirm_lag", 2)
     src_map = {
         "eastmoney-lsjz": "天天基金历史净值列表接口",
@@ -624,9 +624,9 @@ def render_html(
     total: dict,
     timeline: list[dict],
     status_sources: dict[str, str],
+    updated: str,
 ) -> str:
     cur = config.get("currency_symbol", "¥")
-    updated = datetime.now(CST).strftime("%Y-%m-%d %H:%M (UTC+8)")
     latest_date = max((f["latest_nav_date"] for f in funds if f["latest_nav_date"]), default="-")
     lag = config.get("confirm_lag", 2)
     svg = render_curve_svg(timeline)
@@ -802,8 +802,7 @@ def main() -> int:
         round(total["profit"] / total["invested"], 6) if total["invested"] else 0.0
     )
 
-    snapshot = {
-        "updated_at": datetime.now(CST).isoformat(timespec="seconds"),
+    core = {
         "start_date": start_date,
         "confirm_lag": confirm_lag,
         "latest_nav_date": max((f["latest_nav_date"] for f in fund_results), default=""),
@@ -814,7 +813,23 @@ def main() -> int:
         "total": total,
     }
 
-    (DATA_DIR / "portfolio.json").write_text(
+    # 数据未变化时沿用上次的时间戳，使输出逐字节一致，避免无意义提交
+    portfolio_path = DATA_DIR / "portfolio.json"
+    updated_at = datetime.now(CST).isoformat(timespec="seconds")
+    if portfolio_path.exists():
+        try:
+            prev = json.loads(portfolio_path.read_text(encoding="utf-8"))
+            prev_core = {k: v for k, v in prev.items() if k != "updated_at"}
+            if prev_core == core and prev.get("updated_at"):
+                updated_at = prev["updated_at"]
+                log("数据无变化，沿用上次更新时间戳")
+        except Exception as exc:  # noqa: BLE001
+            log(f"  读取旧快照失败（忽略）：{exc}")
+
+    snapshot = {"updated_at": updated_at, **core}
+    display_updated = datetime.fromisoformat(updated_at).strftime("%Y-%m-%d %H:%M (UTC+8)")
+
+    portfolio_path.write_text(
         json.dumps(snapshot, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
     (DATA_DIR / "timeline.json").write_text(
@@ -822,10 +837,12 @@ def main() -> int:
     )
     (REPORTS_DIR / "curve.svg").write_text(render_curve_svg(timeline), encoding="utf-8")
     (REPORTS_DIR / "index.html").write_text(
-        render_html(config, fund_results, total, timeline, status_sources), encoding="utf-8"
+        render_html(config, fund_results, total, timeline, status_sources, display_updated),
+        encoding="utf-8",
     )
     (ROOT / "README.md").write_text(
-        render_readme(config, fund_results, total, timeline, status_sources), encoding="utf-8"
+        render_readme(config, fund_results, total, timeline, status_sources, display_updated),
+        encoding="utf-8",
     )
 
     log(
