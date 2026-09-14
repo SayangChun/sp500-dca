@@ -3,17 +3,22 @@
 """标普500指数基金每日定投跟踪器
 
 数据源
-    天天基金（东方财富）历史净值接口
-    https://fund.eastmoney.com/pingzhongdata/{code}.js
+    1) 历史净值：天天基金 pingzhongdata 接口
+       https://fund.eastmoney.com/pingzhongdata/{code}.js
+    2) 申购状态：天天基金历史净值列表接口（主）/ F10 净值页（备）
+       https://api.fund.eastmoney.com/f10/lsjz
+       https://fundf10.eastmoney.com/jjjz_{code}.html
 
-定投规则
-    - 每个交易日按固定金额申购，确认份额 = 金额 / 当日单位净值
-    - 非交易日不申购（以官方披露净值的日期为准）
-    - 起始日期由 config.json 指定（2026-08-17），无终止日期
+投资日期口径（按境内基金实际开放申购时间）
+    - 只在「交易日」且「当日开放申购」时执行定投；
+      非交易日、以及公告「暂停申购」的交易日一律不执行。
+    - 申购时段：交易日 9:30–15:00（15:00 前提交视为当日 T 日）。
+    - 确认规则：QDII 基金按 T 日单位净值确认，T+2 个交易日确认份额。
+    - 因此每条记录同时标注「申购日(T)」与「份额确认日(T+2)」。
 
 输出
     data/portfolio.json   当前持仓与统计快照
-    data/timeline.json    逐日累计明细
+    data/timeline.json    逐日累计明细（仅含实际执行定投的交易日）
     reports/curve.svg     定投曲线（供 README 引用）
     reports/index.html    可视化看板
     README.md             仓库首页状态
@@ -37,6 +42,9 @@ REPORTS_DIR = ROOT / "reports"
 
 CST = timezone(timedelta(hours=8))
 PINGZHONG_URL = "https://fund.eastmoney.com/pingzhongdata/{code}.js"
+LSJZ_URL = "https://api.fund.eastmoney.com/f10/lsjz?fundCode={code}&pageIndex={page}&pageSize=50"
+JJJZ_URL = "https://fundf10.eastmoney.com/jjjz_{code}.html"
+
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -45,30 +53,49 @@ HEADERS = {
     "Referer": "https://fund.eastmoney.com/",
 }
 
+# 申购状态判定：命中以下关键词视为「不可申购」
+SUSPEND_KEYWORDS = ("暂停申购", "暂停交易", "封闭")
+
 
 def log(msg: str) -> None:
     print(f"[{datetime.now(CST):%Y-%m-%d %H:%M:%S}] {msg}", flush=True)
 
 
+def is_suspended(status: str | None) -> bool:
+    if not status:
+        return False
+    return any(kw in status for kw in SUSPEND_KEYWORDS)
+
+
 # --------------------------------------------------------------------------- #
 # 数据抓取
 # --------------------------------------------------------------------------- #
-def http_get(url: str, retries: int = 4, timeout: int = 30) -> str:
+def http_get(
+    url: str,
+    referer: str | None = None,
+    retries: int = 4,
+    timeout: int = 30,
+    backoff: float = 2.0,
+) -> str:
+    headers = dict(HEADERS)
+    if referer:
+        headers["Referer"] = referer
     last_err: Exception | None = None
     for attempt in range(1, retries + 1):
         try:
-            req = urllib.request.Request(url, headers=HEADERS)
+            req = urllib.request.Request(url, headers=headers)
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 return resp.read().decode("utf-8", "ignore")
         except Exception as exc:  # noqa: BLE001
             last_err = exc
             log(f"  请求失败（第 {attempt}/{retries} 次）：{exc}")
-            time.sleep(2 * attempt)
+            if attempt < retries:
+                time.sleep(backoff * attempt)
     raise RuntimeError(f"无法获取 {url}：{last_err}")
 
 
-def fetch_fund(code: str) -> tuple[str, list[tuple[str, float]]]:
-    """返回 (基金名称, [(日期, 单位净值), ...] 升序)。"""
+def fetch_fund_nav(code: str) -> tuple[str, list[tuple[str, float]]]:
+    """返回 (基金名称, [(净值日期, 单位净值), ...] 升序)。"""
     text = http_get(PINGZHONG_URL.format(code=code))
 
     match = re.search(r"var\s+Data_netWorthTrend\s*=\s*(\[.*?\])\s*;", text, re.S)
@@ -80,7 +107,7 @@ def fetch_fund(code: str) -> tuple[str, list[tuple[str, float]]]:
 
     navs: list[tuple[str, float]] = []
     for point in json.loads(match.group(1)):
-        # 接口时间戳为「北京时间零点」对应的 UTC 毫秒值，需按 UTC+8 还原日期
+        # 接口时间戳为「北京时间零点」对应的 UTC 毫秒值，须按 UTC+8 还原日期
         day = datetime.fromtimestamp(point["x"] / 1000, CST).strftime("%Y-%m-%d")
         navs.append((day, float(point["y"])))
 
@@ -89,30 +116,141 @@ def fetch_fund(code: str) -> tuple[str, list[tuple[str, float]]]:
     return name, navs
 
 
+def _parse_status_json(text: str, start_date: str, out: dict[str, str]) -> int:
+    data = json.loads(text)
+    rows = (data.get("Data") or {}).get("LSJZList") or []
+    for row in rows:
+        day = row.get("FSRQ") or ""
+        if day and day >= start_date:
+            out[day] = (row.get("SGZT") or "").strip()
+    return len(rows)
+
+
+def _parse_status_html(html: str, start_date: str, out: dict[str, str]) -> int:
+    count = 0
+    for row in re.findall(r"<tr[^>]*>(.*?)</tr>", html, re.S):
+        cells = [
+            re.sub(r"\s+", "", re.sub(r"<[^>]+>", "", c))
+            for c in re.findall(r"<td[^>]*>(.*?)</td>", row, re.S)
+        ]
+        if len(cells) < 5 or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", cells[0]):
+            continue
+        day = cells[0]
+        if day < start_date:
+            continue
+        out[day] = cells[4]  # 列序：净值日期/单位净值/累计净值/日增长率/申购状态/赎回状态/分红送配
+        count += 1
+    return count
+
+
+def fetch_status(code: str, start_date: str) -> tuple[dict[str, str], str]:
+    """返回 ({日期: 申购状态}, 数据来源标识)。失败时返回 ({}, 'unavailable')。"""
+    status: dict[str, str] = {}
+
+    # 主源：历史净值列表 JSON 接口（含申购状态字段 SGZT）
+    try:
+        total = 0
+        for page in range(1, 4):
+            text = http_get(
+                LSJZ_URL.format(code=code, page=page),
+                referer="https://fundf10.eastmoney.com/",
+                retries=2,
+                timeout=15,
+                backoff=1.0,
+            )
+            got = _parse_status_json(text, start_date, status)
+            total += got
+            if got < 50:
+                break
+            time.sleep(0.4)
+        if status:
+            log(f"  {code} 申购状态：来自列表接口，覆盖 {len(status)} 个交易日")
+            return status, "eastmoney-lsjz"
+    except Exception as exc:  # noqa: BLE001
+        log(f"  {code} 列表接口不可用：{exc}")
+
+    # 备源：F10 历史净值页（HTML 表格）
+    try:
+        html = http_get(
+            JJJZ_URL.format(code=code),
+            referer="https://fundf10.eastmoney.com/",
+            retries=2,
+            timeout=15,
+            backoff=1.0,
+        )
+        got = _parse_status_html(html, start_date, status)
+        if status:
+            log(f"  {code} 申购状态：来自 F10 页面，覆盖 {len(status)} 个交易日")
+            return status, "eastmoney-f10-html"
+        log(f"  {code} F10 页面未解析到有效状态（{got} 行）")
+    except Exception as exc:  # noqa: BLE001
+        log(f"  {code} F10 页面不可用：{exc}")
+
+    return {}, "unavailable"
+
+
 # --------------------------------------------------------------------------- #
 # 定投计算
 # --------------------------------------------------------------------------- #
-def compute_fund(fund_cfg: dict, navs: list[tuple[str, float]], start_date: str) -> dict:
+def compute_fund(
+    fund_cfg: dict,
+    navs: list[tuple[str, float]],
+    start_date: str,
+    status: dict[str, str],
+    forced_suspended: set[str],
+    confirm_lag: int,
+) -> dict:
     amount = float(fund_cfg["daily_amount"])
+    all_days = [d for d, _ in navs]
+    # 交易日历 = 已披露净值日 + 其后的工作日（仅用于推算 T+N 确认日）
+    calendar = list(all_days)
+    today = datetime.now(CST).strftime("%Y-%m-%d")
+    cursor = datetime.strptime(all_days[-1], "%Y-%m-%d") + timedelta(days=1)
+    while cursor.strftime("%Y-%m-%d") <= today:
+        if cursor.weekday() < 5:
+            calendar.append(cursor.strftime("%Y-%m-%d"))
+        cursor += timedelta(days=1)
+    day_index = {d: i for i, d in enumerate(calendar)}
+
     shares = 0.0
     invested = 0.0
     daily: list[dict] = []
+    skipped: list[dict] = []
 
     for day, nav in navs:
         if day < start_date:
             continue
+
+        st = status.get(day, "")
+        if day in forced_suspended or is_suspended(st):
+            skipped.append(
+                {
+                    "date": day,
+                    "nav": round(nav, 4),
+                    "status": st or "暂停申购",
+                    "reason": "基金当日暂停申购，定投未执行",
+                }
+            )
+            continue
+
         bought = amount / nav
         shares += bought
         invested += amount
+
+        i = day_index[day]
+        confirm_date = calendar[i + confirm_lag] if i + confirm_lag < len(calendar) else None
+
         daily.append(
             {
                 "date": day,
                 "nav": round(nav, 4),
                 "amount": round(amount, 2),
-                "shares": round(bought, 4),
-                "cum_shares": round(shares, 4),
+                "shares": round(bought, 6),
+                "cum_shares": round(shares, 6),
                 "cum_invested": round(invested, 2),
                 "market_value": round(shares * nav, 2),
+                "confirm_date": confirm_date,
+                "status": st,
             }
         )
 
@@ -126,8 +264,10 @@ def compute_fund(fund_cfg: dict, navs: list[tuple[str, float]], start_date: str)
         "short_name": fund_cfg.get("short_name", fund_cfg["name"]),
         "share_class": fund_cfg.get("share_class", ""),
         "daily_amount": round(amount, 2),
+        "daily_limit": fund_cfg.get("daily_limit"),
         "trading_days": len(daily),
-        "shares": round(shares, 2),
+        "skipped_days": len(skipped),
+        "shares": round(shares, 6),
         "invested": round(invested, 2),
         "avg_cost": round(invested / shares, 4) if shares else 0.0,
         "latest_nav": round(latest_nav, 4),
@@ -136,11 +276,12 @@ def compute_fund(fund_cfg: dict, navs: list[tuple[str, float]], start_date: str)
         "profit": round(profit, 2),
         "return_rate": round(profit / invested, 6) if invested else 0.0,
         "daily": daily,
+        "skipped": skipped,
     }
 
 
 def build_timeline(fund_results: list[dict]) -> list[dict]:
-    """合并各基金为组合层面的逐日累计曲线。"""
+    """合并各基金为组合层面的逐日累计曲线（仅含实际执行定投的交易日）。"""
     index = {f["code"]: {r["date"]: r for r in f["daily"]} for f in fund_results}
     dates = sorted({d for f in fund_results for d in index[f["code"]]})
 
@@ -169,6 +310,20 @@ def build_timeline(fund_results: list[dict]) -> list[dict]:
             }
         )
     return timeline
+
+
+def aggregate_skipped(funds: list[dict]) -> list[dict]:
+    """把各基金的「暂停申购」日按日期合并，便于展示。"""
+    merged: dict[str, dict] = {}
+    for f in funds:
+        for s in f["skipped"]:
+            item = merged.setdefault(
+                s["date"],
+                {"date": s["date"], "status": s["status"], "funds": [], "navs": {}},
+            )
+            item["funds"].append(f["short_name"])
+            item["navs"][f["short_name"]] = s["nav"]
+    return [merged[d] for d in sorted(merged)]
 
 
 # --------------------------------------------------------------------------- #
@@ -210,14 +365,13 @@ def render_curve_svg(timeline: list[dict], width: int = 940, height: int = 430) 
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" '
         f'viewBox="0 0 {width} {height}" font-family="-apple-system,BlinkMacSystemFont,'
         f'\'Segoe UI\',\'PingFang SC\',\'Microsoft YaHei\',sans-serif">',
-        '<defs>',
+        "<defs>",
         '<linearGradient id="mvFill" x1="0" y1="0" x2="0" y2="1">',
         '<stop offset="0%" stop-color="#3b82f6" stop-opacity="0.28"/>',
         '<stop offset="100%" stop-color="#3b82f6" stop-opacity="0.02"/>',
         "</linearGradient>",
         "</defs>",
         f'<rect x="0" y="0" width="{width}" height="{height}" fill="#ffffff"/>',
-        # 标题与图例
         f'<text x="{pad_l}" y="24" font-size="15" font-weight="600" fill="#0f172a">'
         f"定投累计投入 vs 当前市值</text>",
         f'<line x1="{pad_l}" y1="40" x2="{pad_l+16}" y2="40" stroke="#94a3b8" '
@@ -227,7 +381,6 @@ def render_curve_svg(timeline: list[dict], width: int = 940, height: int = 430) 
         f'<text x="{pad_l+122}" y="44" font-size="12" fill="#64748b">当前市值</text>',
     ]
 
-    # 横向网格与 Y 轴刻度
     grid = 5
     for k in range(grid + 1):
         v = lo + (hi - lo) * k / grid
@@ -241,7 +394,6 @@ def render_curve_svg(timeline: list[dict], width: int = 940, height: int = 430) 
             f'fill="#94a3b8">{_fmt_money(v)}</text>'
         )
 
-    # 面积填充 + 市值线 + 投入线
     area = (
         f"M{x_at(0):.1f},{y_at(lo):.1f} "
         + " ".join(f"L{x_at(i):.1f},{y_at(p['market_value']):.1f}" for i, p in enumerate(timeline))
@@ -257,7 +409,6 @@ def render_curve_svg(timeline: list[dict], width: int = 940, height: int = 430) 
         f'stroke-linejoin="round"/>'
     )
 
-    # 末端圆点
     parts.append(
         f'<circle cx="{x_at(n-1):.1f}" cy="{y_at(timeline[-1]["invested"]):.1f}" r="4" '
         f'fill="#ffffff" stroke="#94a3b8" stroke-width="2.5"/>'
@@ -267,7 +418,6 @@ def render_curve_svg(timeline: list[dict], width: int = 940, height: int = 430) 
         f'fill="#2563eb" stroke="#ffffff" stroke-width="2"/>'
     )
 
-    # X 轴日期
     tick_count = min(7, n)
     seen: set[int] = set()
     for k in range(tick_count):
@@ -299,17 +449,30 @@ def _signed_pct(value: float) -> str:
     return f"{'+' if value >= 0 else ''}{value * 100:.2f}%"
 
 
-def render_readme(config: dict, funds: list[dict], total: dict, timeline: list[dict]) -> str:
+def render_readme(
+    config: dict,
+    funds: list[dict],
+    total: dict,
+    timeline: list[dict],
+    status_sources: dict[str, str],
+) -> str:
     cur = config.get("currency_symbol", "¥")
     latest_date = max((f["latest_nav_date"] for f in funds if f["latest_nav_date"]), default="-")
     updated = datetime.now(CST).strftime("%Y-%m-%d %H:%M (UTC+8)")
+    lag = config.get("confirm_lag", 2)
+    src_map = {
+        "eastmoney-lsjz": "天天基金历史净值列表接口",
+        "eastmoney-f10-html": "天天基金 F10 历史净值页",
+        "unavailable": "未获取到（使用已知暂停申购日兜底）",
+    }
+    skipped_all = aggregate_skipped(funds)
 
     lines: list[str] = []
     lines.append(f"# {config['title']}")
     lines.append("")
     lines.append(
-        "> 自动跟踪标普500指数基金（QDII）每日定投，数据取自天天基金官方披露净值，"
-        "由 GitHub Actions 每个交易日自动更新。"
+        "> 自动跟踪标普500指数基金（QDII）每日定投。数据取自天天基金披露的官方净值与申购状态，"
+        "由 GitHub Actions 自动更新。"
     )
     lines.append("")
     lines.append(f"**仓库**：{config['repo']}")
@@ -318,7 +481,9 @@ def render_readme(config: dict, funds: list[dict], total: dict, timeline: list[d
     lines.append("")
     lines.append(f"- **开始定投**：{config['start_date']}（持续定投，无终止日期）")
     lines.append(f"- **最新净值日**：{latest_date}")
-    lines.append(f"- **累计交易日**：{total['trading_days']} 天")
+    lines.append(f"- **实际定投交易日**：{total['trading_days']} 天")
+    if skipped_all:
+        lines.append(f"- **因暂停申购跳过**：{len(skipped_all)} 天")
     lines.append(f"- **累计投入**：{cur}{_fmt_money(total['invested'])}")
     lines.append(f"- **当前市值**：{cur}{_fmt_money(total['market_value'])}")
     lines.append(
@@ -328,7 +493,7 @@ def render_readme(config: dict, funds: list[dict], total: dict, timeline: list[d
     lines.append("")
     lines.append("## 持仓明细")
     lines.append("")
-    lines.append("| 基金 | 代码 | 每日定投 | 交易日 | 投入本金 | 持有份额 | 成本净值 | 最新净值 | 当前市值 | 累计盈亏 | 收益率 |")
+    lines.append("| 基金 | 代码 | 每日定投 | 定投交易日 | 投入本金 | 持有份额 | 成本净值 | 最新净值 | 当前市值 | 累计盈亏 | 收益率 |")
     lines.append("|:---|:---:|:---:|:---:|---:|---:|---:|---:|---:|---:|---:|")
     for f in funds:
         lines.append(
@@ -350,25 +515,52 @@ def render_readme(config: dict, funds: list[dict], total: dict, timeline: list[d
     lines.append("")
     lines.append("## 最近记录")
     lines.append("")
-    lines.append("| 日期 | 累计投入 | 当前市值 | 累计盈亏 |")
-    lines.append("|:---|---:|---:|---:|")
+    lines.append("| 申购日 (T) | 份额确认日 (T+2) | 单位净值 | 累计投入 | 当前市值 | 累计盈亏 |")
+    lines.append("|:---|:---:|---:|---:|---:|---:|")
     for point in timeline[-10:][::-1]:
+        fund0 = funds[0]["daily"]
+        rec = next((r for r in fund0 if r["date"] == point["date"]), None)
+        confirm = (rec or {}).get("confirm_date") or "待确认"
+        nav = f"{(rec or {}).get('nav', 0):.4f}"
         lines.append(
-            f"| {point['date']} | {cur}{_fmt_money(point['invested'])} | "
+            f"| {point['date']} | {confirm} | {nav} | "
+            f"{cur}{_fmt_money(point['invested'])} | "
             f"{cur}{_fmt_money(point['market_value'])} | {cur}{_signed(point['profit'])} |"
         )
     lines.append("")
-    lines.append("## 定投规则")
+    if skipped_all:
+        lines.append("## 非投资日说明")
+        lines.append("")
+        lines.append("以下交易日因基金**暂停申购**，当日定投未执行：")
+        lines.append("")
+        lines.append("| 日期 | 当日申购状态 | 涉及基金 | 当日单位净值 |")
+        lines.append("|:---|:---|:---|---:|")
+        for s in skipped_all:
+            navs = " / ".join(f"{k} {v:.4f}" for k, v in s["navs"].items())
+            lines.append(f"| {s['date']} | {s['status']} | {'、'.join(s['funds'])} | {navs} |")
+        lines.append("")
+    lines.append("## 定投规则（按境内基金实际开放申购口径）")
     lines.append("")
-    lines.append("- 每个交易日按固定金额申购，确认份额 = 金额 ÷ 当日单位净值；非交易日不申购。")
+    lines.append("1. **投资日**：仅在该基金为交易日的当天执行；非交易日不申购。")
+    lines.append("2. **申购状态**：仅当该交易日「开放申购」时执行；公告「暂停申购」的交易日一律不执行。")
+    lines.append("3. **申购时段**：交易日 9:30–15:00；15:00 前提交的申请视为当日（T 日）。")
+    lines.append(f"4. **确认规则**：QDII 基金按 **T 日单位净值**确认份额，**T+{lag} 个交易日**确认。")
+    lines.append("5. **确认份额**：份额 = 定投金额 ÷ T 日单位净值。")
+    lines.append("")
     for f in funds:
-        lines.append(f"- {f['name']}（{f['code']}）：每个交易日 {cur}{f['daily_amount']:.2f}")
+        limit = f.get("daily_limit")
+        limit_txt = f"，单日累计购买上限 {cur}{limit:.0f}" if limit else ""
+        lines.append(
+            f"- {f['name']}（{f['code']}）：每个可申购交易日 {cur}{f['daily_amount']:.2f}{limit_txt}"
+        )
     lines.append(f"- 起投日：{config['start_date']}，无终止日期。")
     lines.append("")
     lines.append("## 数据与自动化")
     lines.append("")
-    lines.append(f"- 数据源：{config['source']}（{config['source_url']}）")
-    lines.append("- 更新方式：GitHub Actions 定时任务，自动抓取净值、重算持仓并提交结果。")
+    lines.append(f"- 净值数据源：{config['source']}（{config['source_url']}）")
+    for f in funds:
+        lines.append(f"  - {f['code']} 申购状态：{src_map.get(status_sources.get(f['code'], ''), '—')}")
+    lines.append("- 更新方式：GitHub Actions 定时任务，自动抓取净值与申购状态、重算持仓并提交结果。")
     lines.append("- 看板页面：`reports/index.html`（可启用 GitHub Pages 在线查看）。")
     lines.append("")
     lines.append("---")
@@ -409,7 +601,6 @@ h1 { font-size: 24px; margin: 0 0 6px; letter-spacing: -0.01em; }
 .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 16px 18px; }
 .card .k { color: var(--muted); font-size: 12px; margin-bottom: 8px; }
 .card .v { font-size: 22px; font-weight: 650; font-variant-numeric: tabular-nums; }
-.card .v.small { font-size: 17px; }
 .up { color: var(--up); }
 .down { color: var(--down); }
 .panel { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 18px 18px 10px; margin-bottom: 24px; }
@@ -421,16 +612,25 @@ th { color: var(--muted); font-weight: 500; font-size: 12px; }
 th:first-child, td:first-child { text-align: left; }
 tr:last-child td { border-bottom: none; }
 tbody tr:hover { background: #fafcff; }
+.tag { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 11px; background: #fff1f2; color: #be123c; border: 1px solid #fecdd3; }
 .note { color: var(--muted); font-size: 12px; line-height: 1.9; }
 .note code { background: #eef2f7; padding: 1px 5px; border-radius: 4px; font-size: 11px; }
 """
 
 
-def render_html(config: dict, funds: list[dict], total: dict, timeline: list[dict]) -> str:
+def render_html(
+    config: dict,
+    funds: list[dict],
+    total: dict,
+    timeline: list[dict],
+    status_sources: dict[str, str],
+) -> str:
     cur = config.get("currency_symbol", "¥")
     updated = datetime.now(CST).strftime("%Y-%m-%d %H:%M (UTC+8)")
     latest_date = max((f["latest_nav_date"] for f in funds if f["latest_nav_date"]), default="-")
+    lag = config.get("confirm_lag", 2)
     svg = render_curve_svg(timeline)
+    skipped_all = aggregate_skipped(funds)
 
     def cls(v: float) -> str:
         return "up" if v > 0 else ("down" if v < 0 else "")
@@ -441,8 +641,10 @@ def render_html(config: dict, funds: list[dict], total: dict, timeline: list[dic
         ("累计盈亏", f"{cur}{_signed(total['profit'])}", cls(total["profit"])),
         ("累计收益率", _signed_pct(total["return_rate"]), cls(total["profit"])),
         ("最新净值日", latest_date, ""),
-        ("累计交易日", f"{total['trading_days']} 天", ""),
+        ("定投交易日", f"{total['trading_days']} 天", ""),
     ]
+    if skipped_all:
+        cards.append(("暂停申购跳过", f"{len(skipped_all)} 天", ""))
     card_html = "".join(
         f'<div class="card"><div class="k">{k}</div><div class="v {c}">{v}</div></div>'
         for k, v, c in cards
@@ -450,7 +652,7 @@ def render_html(config: dict, funds: list[dict], total: dict, timeline: list[dic
 
     fund_rows = "".join(
         f"<tr><td>{f['short_name']}</td><td>{f['code']}</td>"
-        f"<td>{cur}{f['daily_amount']:.2f}</td><td>{f['invested']:,.2f}</td>"
+        f"<td>{cur}{f['daily_amount']:.2f}</td><td>{f['trading_days']}</td><td>{f['invested']:,.2f}</td>"
         f"<td>{f['shares']:,.2f}</td><td>{f['avg_cost']:.4f}</td><td>{f['latest_nav']:.4f}</td>"
         f"<td>{f['market_value']:,.2f}</td>"
         f'<td class="{cls(f["profit"])}">{_signed(f["profit"])}</td>'
@@ -458,15 +660,41 @@ def render_html(config: dict, funds: list[dict], total: dict, timeline: list[dic
         for f in funds
     )
 
-    recent_rows = "".join(
-        f"<tr><td>{p['date']}</td><td>{p['invested']:,.2f}</td>"
-        f"<td>{p['market_value']:,.2f}</td>"
-        f'<td class="{cls(p["profit"])}">{_signed(p["profit"])}</td></tr>'
-        for p in timeline[-15:][::-1]
-    )
+    fund0 = funds[0]["daily"]
+    recent_rows = ""
+    for p in timeline[-15:][::-1]:
+        rec = next((r for r in fund0 if r["date"] == p["date"]), None)
+        confirm = (rec or {}).get("confirm_date") or "待确认"
+        nav = f"{(rec or {}).get('nav', 0):.4f}"
+        recent_rows += (
+            f"<tr><td>{p['date']}</td><td>{confirm}</td><td>{nav}</td>"
+            f"<td>{p['invested']:,.2f}</td><td>{p['market_value']:,.2f}</td>"
+            f'<td class="{cls(p["profit"])}">{_signed(p["profit"])}</td></tr>'
+        )
+
+    skipped_panel = ""
+    if skipped_all:
+        rows = "".join(
+            f"<tr><td>{s['date']}</td>"
+            f'<td><span class="tag">{s["status"]}</span></td>'
+            f"<td>{'、'.join(s['funds'])}</td>"
+            f"<td>{' / '.join(f'{k} {v:.4f}' for k, v in s['navs'].items())}</td></tr>"
+            for s in skipped_all
+        )
+        skipped_panel = f"""
+  <div class="panel">
+    <h2>非投资日说明（暂停申购，定投未执行）</h2>
+    <table>
+      <thead><tr><th>日期</th><th>当日申购状态</th><th>涉及基金</th><th>当日单位净值</th></tr></thead>
+      <tbody>{rows}</tbody>
+    </table>
+  </div>"""
 
     rules = "".join(
-        f"<li>{f['name']}（{f['code']}）：每个交易日 {cur}{f['daily_amount']:.2f}</li>" for f in funds
+        f"<li>{f['name']}（{f['code']}）：每个可申购交易日 {cur}{f['daily_amount']:.2f}"
+        + (f"，单日累计购买上限 {cur}{f['daily_limit']:.0f}" if f.get("daily_limit") else "")
+        + "</li>"
+        for f in funds
     )
 
     return f"""<!DOCTYPE html>
@@ -493,8 +721,8 @@ def render_html(config: dict, funds: list[dict], total: dict, timeline: list[dic
   <div class="panel">
     <h2>持仓明细</h2>
     <table>
-      <thead><tr><th>基金</th><th>代码</th><th>每日定投</th><th>投入本金</th><th>持有份额</th>
-      <th>成本净值</th><th>最新净值</th><th>当前市值</th><th>累计盈亏</th><th>收益率</th></tr></thead>
+      <thead><tr><th>基金</th><th>代码</th><th>每日定投</th><th>定投交易日</th><th>投入本金</th>
+      <th>持有份额</th><th>成本净值</th><th>最新净值</th><th>当前市值</th><th>累计盈亏</th><th>收益率</th></tr></thead>
       <tbody>{fund_rows}</tbody>
     </table>
   </div>
@@ -502,17 +730,25 @@ def render_html(config: dict, funds: list[dict], total: dict, timeline: list[dic
   <div class="panel">
     <h2>最近记录</h2>
     <table>
-      <thead><tr><th>日期</th><th>累计投入</th><th>当前市值</th><th>累计盈亏</th></tr></thead>
+      <thead><tr><th>申购日 (T)</th><th>份额确认日 (T+{lag})</th><th>单位净值</th>
+      <th>累计投入</th><th>当前市值</th><th>累计盈亏</th></tr></thead>
       <tbody>{recent_rows}</tbody>
     </table>
   </div>
-
+{skipped_panel}
   <div class="panel">
-    <h2>定投规则与说明</h2>
+    <h2>定投规则（按境内基金实际开放申购口径）</h2>
     <div class="note">
+      <ol>
+        <li>投资日：仅在该基金为交易日的当天执行；非交易日不申购。</li>
+        <li>申购状态：仅当该交易日「开放申购」时执行；公告「暂停申购」的交易日一律不执行。</li>
+        <li>申购时段：交易日 9:30–15:00；15:00 前提交的申请视为当日（T 日）。</li>
+        <li>确认规则：QDII 基金按 <b>T 日单位净值</b>确认份额，<b>T+{lag} 个交易日</b>确认。</li>
+        <li>确认份额：份额 = 定投金额 ÷ T 日单位净值。</li>
+      </ol>
       <ul>
         {rules}
-        <li>起投日：{config['start_date']}，无终止日期；非交易日不申购。</li>
+        <li>起投日：{config['start_date']}，无终止日期。</li>
       </ul>
       数据由 <code>scripts/update.py</code> 每日自动抓取并重算，GitHub Actions 提交更新。<br>
       本页面仅用于个人投资记录，不构成任何投资建议。
@@ -530,23 +766,36 @@ def render_html(config: dict, funds: list[dict], total: dict, timeline: list[dic
 def main() -> int:
     config = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
     start_date = config["start_date"]
+    confirm_lag = int(config.get("confirm_lag", 2))
+    forced_suspended = set(config.get("suspended_dates") or [])
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
 
-    log(f"开始更新：起始日 {start_date}")
+    log(f"开始更新：起始日 {start_date}，份额确认 T+{confirm_lag}")
+
     fund_results: list[dict] = []
+    status_sources: dict[str, str] = {}
     for fund_cfg in config["funds"]:
-        _, navs = fetch_fund(fund_cfg["code"])
-        fund_results.append(compute_fund(fund_cfg, navs, start_date))
+        code = fund_cfg["code"]
+        _, navs = fetch_fund_nav(code)
+        status, src = fetch_status(code, start_date)
+        status_sources[code] = src
+        result = compute_fund(fund_cfg, navs, start_date, status, forced_suspended, confirm_lag)
+        if result["skipped"]:
+            days = ", ".join(s["date"] for s in result["skipped"])
+            log(f"  {code} 跳过 {len(result['skipped'])} 个暂停申购日：{days}")
+        fund_results.append(result)
 
     timeline = build_timeline(fund_results)
 
     total = {
         "daily_amount": round(sum(f["daily_amount"] for f in fund_results), 2),
         "trading_days": max((f["trading_days"] for f in fund_results), default=0),
+        "skipped_days": len(aggregate_skipped(fund_results)),
         "invested": round(sum(f["invested"] for f in fund_results), 2),
-        "shares": round(sum(f["shares"] for f in fund_results), 2),
-        "market_value": round(sum(f["market_value"] for f in fund_results), 2),
+        "shares": round(sum(f["shares"] for f in fund_results), 6),
+        # 组合市值按未取整数值求和，避免逐只取整后再相加产生 0.01 偏差
+        "market_value": round(sum(f["shares"] * f["latest_nav"] for f in fund_results), 2),
     }
     total["profit"] = round(total["market_value"] - total["invested"], 2)
     total["return_rate"] = (
@@ -556,8 +805,11 @@ def main() -> int:
     snapshot = {
         "updated_at": datetime.now(CST).isoformat(timespec="seconds"),
         "start_date": start_date,
+        "confirm_lag": confirm_lag,
         "latest_nav_date": max((f["latest_nav_date"] for f in fund_results), default=""),
         "source": config["source"],
+        "status_source": status_sources,
+        "skipped_dates": aggregate_skipped(fund_results),
         "funds": [{k: v for k, v in f.items() if k != "daily"} for f in fund_results],
         "total": total,
     }
@@ -570,14 +822,15 @@ def main() -> int:
     )
     (REPORTS_DIR / "curve.svg").write_text(render_curve_svg(timeline), encoding="utf-8")
     (REPORTS_DIR / "index.html").write_text(
-        render_html(config, fund_results, total, timeline), encoding="utf-8"
+        render_html(config, fund_results, total, timeline, status_sources), encoding="utf-8"
     )
     (ROOT / "README.md").write_text(
-        render_readme(config, fund_results, total, timeline), encoding="utf-8"
+        render_readme(config, fund_results, total, timeline, status_sources), encoding="utf-8"
     )
 
     log(
-        f"完成：投入 {total['invested']:.2f}，市值 {total['market_value']:.2f}，"
+        f"完成：定投 {total['trading_days']} 个交易日，跳过 {total['skipped_days']} 天；"
+        f"投入 {total['invested']:.2f}，市值 {total['market_value']:.2f}，"
         f"盈亏 {total['profit']:+.2f}（{total['return_rate'] * 100:+.2f}%）"
     )
     return 0
