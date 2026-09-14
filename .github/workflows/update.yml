@@ -1,6 +1,12 @@
 name: 更新定投数据
 
 on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "data/**"
+      - "reports/**"
+      - "README.md"
   schedule:
     # 每天两次（北京时间 08:30 与 20:30），捕捉最新披露的净值
     - cron: "30 0 * * *"
