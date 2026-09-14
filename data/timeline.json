@@ -3,13 +3,13 @@
     "date": "2026-08-17",
     "invested": 19.99,
     "market_value": 19.99,
-    "profit": -0.0
+    "profit": 0.0
   },
   {
     "date": "2026-08-18",
     "invested": 39.98,
-    "market_value": 39.86,
-    "profit": -0.12
+    "market_value": 39.85,
+    "profit": -0.13
   },
   {
     "date": "2026-08-19",
@@ -38,38 +38,38 @@
   {
     "date": "2026-08-25",
     "invested": 139.93,
-    "market_value": 139.84,
-    "profit": -0.09
+    "market_value": 139.85,
+    "profit": -0.08
   },
   {
     "date": "2026-08-26",
     "invested": 159.92,
-    "market_value": 159.74,
-    "profit": -0.18
+    "market_value": 159.75,
+    "profit": -0.17
   },
   {
     "date": "2026-08-27",
     "invested": 179.91,
-    "market_value": 180.89,
-    "profit": 0.98
+    "market_value": 180.91,
+    "profit": 1.0
   },
   {
     "date": "2026-08-28",
     "invested": 199.9,
-    "market_value": 200.37,
-    "profit": 0.47
+    "market_value": 200.38,
+    "profit": 0.48
   },
   {
     "date": "2026-08-31",
     "invested": 219.89,
-    "market_value": 219.82,
-    "profit": -0.07
+    "market_value": 219.83,
+    "profit": -0.06
   },
   {
     "date": "2026-09-01",
     "invested": 239.88,
-    "market_value": 238.33,
-    "profit": -1.55
+    "market_value": 238.34,
+    "profit": -1.54
   },
   {
     "date": "2026-09-02",
@@ -92,19 +92,19 @@
   {
     "date": "2026-09-08",
     "invested": 319.84,
-    "market_value": 319.35,
-    "profit": -0.49
+    "market_value": 319.37,
+    "profit": -0.47
   },
   {
     "date": "2026-09-09",
     "invested": 339.83,
-    "market_value": 337.75,
-    "profit": -2.08
+    "market_value": 337.77,
+    "profit": -2.06
   },
   {
     "date": "2026-09-10",
     "invested": 359.82,
-    "market_value": 355.89,
-    "profit": -3.93
+    "market_value": 355.91,
+    "profit": -3.91
   }
 ]

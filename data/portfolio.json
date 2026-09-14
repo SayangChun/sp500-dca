@@ -1,13 +1,15 @@
 {
-  "updated_at": "2026-09-14T11:20:33+08:00",
+  "updated_at": "2026-09-14T12:06:25+08:00",
   "start_date": "2026-08-17",
   "confirm_lag": 2,
+  "share_decimals": 2,
   "latest_nav_date": "2026-09-10",
   "source": "天天基金（东方财富）历史净值 + 申购状态",
   "status_source": {
     "017641": "eastmoney-lsjz",
     "019305": "eastmoney-lsjz"
   },
+  "warnings": [],
   "skipped_dates": [
     {
       "date": "2026-09-07",
@@ -29,17 +31,20 @@
       "short_name": "摩根标普500 A",
       "share_class": "A",
       "daily_amount": 9.99,
+      "purchase_fee_rate": 0.0,
       "daily_limit": 10.0,
       "trading_days": 18,
       "skipped_days": 1,
-      "shares": 105.357673,
+      "shares": 105.36,
       "invested": 179.82,
-      "avg_cost": 1.7068,
+      "total_fee": 0.0,
+      "avg_cost": 1.7067,
       "latest_nav": 1.6882,
       "latest_nav_date": "2026-09-10",
-      "market_value": 177.86,
-      "profit": -1.96,
-      "return_rate": -0.010873,
+      "market_value": 177.87,
+      "profit": -1.95,
+      "return_rate": -0.010851,
+      "verify": null,
       "skipped": [
         {
           "date": "2026-09-07",
@@ -55,17 +60,20 @@
       "short_name": "摩根标普500 C",
       "share_class": "C",
       "daily_amount": 10.0,
+      "purchase_fee_rate": 0.0,
       "daily_limit": 10.0,
       "trading_days": 18,
       "skipped_days": 1,
-      "shares": 106.466058,
+      "shares": 106.48,
       "invested": 180.0,
-      "avg_cost": 1.6907,
+      "total_fee": 0.0,
+      "avg_cost": 1.6905,
       "latest_nav": 1.6721,
       "latest_nav_date": "2026-09-10",
-      "market_value": 178.02,
-      "profit": -1.98,
-      "return_rate": -0.010989,
+      "market_value": 178.05,
+      "profit": -1.95,
+      "return_rate": -0.01086,
+      "verify": null,
       "skipped": [
         {
           "date": "2026-09-07",
@@ -81,9 +89,10 @@
     "trading_days": 18,
     "skipped_days": 1,
     "invested": 359.82,
-    "shares": 211.823731,
-    "market_value": 355.89,
-    "profit": -3.93,
-    "return_rate": -0.010922
+    "shares": 211.84,
+    "total_fee": 0.0,
+    "market_value": 355.91,
+    "profit": -3.91,
+    "return_rate": -0.010867
   }
 }

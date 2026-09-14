@@ -33,6 +33,7 @@ import time
 import urllib.error
 import urllib.request
 from datetime import datetime, timedelta, timezone
+from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -59,6 +60,16 @@ SUSPEND_KEYWORDS = ("暂停申购", "暂停交易", "封闭")
 
 def log(msg: str) -> None:
     print(f"[{datetime.now(CST):%Y-%m-%d %H:%M:%S}] {msg}", flush=True)
+
+
+def round_half_up(value: float, digits: int = 2) -> float:
+    """四舍五入（基金登记结算口径）。
+
+    Python 内置 round() 采用银行家舍入（round-half-to-even），
+    在 x.xx5 这类边界上会与基金公司的四舍五入结果不一致，故单独实现。
+    """
+    quant = Decimal(1).scaleb(-digits)
+    return float(Decimal(str(value)).quantize(quant, rounding=ROUND_HALF_UP))
 
 
 def is_suspended(status: str | None) -> bool:
@@ -199,8 +210,10 @@ def compute_fund(
     status: dict[str, str],
     forced_suspended: set[str],
     confirm_lag: int,
+    share_decimals: int,
 ) -> dict:
     amount = float(fund_cfg["daily_amount"])
+    fee_rate = float(fund_cfg.get("purchase_fee_rate") or 0.0)
     all_days = [d for d, _ in navs]
     # 交易日历 = 已披露净值日 + 其后的工作日（仅用于推算 T+N 确认日）
     calendar = list(all_days)
@@ -233,7 +246,12 @@ def compute_fund(
             )
             continue
 
-        bought = amount / nav
+        # 前端收费：净申购金额 = 申购金额 ÷ (1 + 申购费率)，四舍五入保留 2 位小数
+        net_amount = round_half_up(amount / (1 + fee_rate), 2)
+        fee = round_half_up(amount - net_amount, 2)
+        # 申购份额 = 净申购金额 ÷ T日基金份额净值，四舍五入保留 share_decimals 位小数
+        bought = round_half_up(net_amount / nav, share_decimals)
+
         shares += bought
         invested += amount
 
@@ -244,11 +262,13 @@ def compute_fund(
             {
                 "date": day,
                 "nav": round(nav, 4),
-                "amount": round(amount, 2),
-                "shares": round(bought, 6),
-                "cum_shares": round(shares, 6),
-                "cum_invested": round(invested, 2),
-                "market_value": round(shares * nav, 2),
+                "amount": round_half_up(amount, 2),
+                "fee": fee,
+                "net_amount": net_amount,
+                "shares": bought,
+                "cum_shares": round_half_up(shares, share_decimals),
+                "cum_invested": round_half_up(invested, 2),
+                "market_value": round_half_up(shares * nav, 2),
                 "confirm_date": confirm_date,
                 "status": st,
             }
@@ -258,23 +278,40 @@ def compute_fund(
     market_value = shares * latest_nav
     profit = market_value - invested
 
+    total_fee = round_half_up(sum(d["fee"] for d in daily), 2)
+
+    # 可选：与用户 App 中的实际份额核对
+    expected = fund_cfg.get("verify_shares")
+    verify = None
+    if expected is not None:
+        diff = round_half_up(shares - float(expected), share_decimals)
+        verify = {
+            "expected": round_half_up(float(expected), share_decimals),
+            "actual": round_half_up(shares, share_decimals),
+            "diff": diff,
+            "ok": abs(diff) <= 0.01,
+        }
+
     return {
         "code": fund_cfg["code"],
         "name": fund_cfg["name"],
         "short_name": fund_cfg.get("short_name", fund_cfg["name"]),
         "share_class": fund_cfg.get("share_class", ""),
-        "daily_amount": round(amount, 2),
+        "daily_amount": round_half_up(amount, 2),
+        "purchase_fee_rate": fee_rate,
         "daily_limit": fund_cfg.get("daily_limit"),
         "trading_days": len(daily),
         "skipped_days": len(skipped),
-        "shares": round(shares, 6),
-        "invested": round(invested, 2),
+        "shares": round_half_up(shares, share_decimals),
+        "invested": round_half_up(invested, 2),
+        "total_fee": total_fee,
         "avg_cost": round(invested / shares, 4) if shares else 0.0,
         "latest_nav": round(latest_nav, 4),
         "latest_nav_date": daily[-1]["date"] if daily else "",
-        "market_value": round(market_value, 2),
-        "profit": round(profit, 2),
+        "market_value": round_half_up(market_value, 2),
+        "profit": round_half_up(profit, 2),
         "return_rate": round(profit / invested, 6) if invested else 0.0,
+        "verify": verify,
         "daily": daily,
         "skipped": skipped,
     }
@@ -304,9 +341,9 @@ def build_timeline(fund_results: list[dict]) -> list[dict]:
         timeline.append(
             {
                 "date": day,
-                "invested": round(invested, 2),
-                "market_value": round(value, 2),
-                "profit": round(value - invested, 2),
+                "invested": round_half_up(invested, 2),
+                "market_value": round_half_up(value, 2),
+                "profit": round_half_up(value - invested, 2),
             }
         )
     return timeline
@@ -456,10 +493,12 @@ def render_readme(
     timeline: list[dict],
     status_sources: dict[str, str],
     updated: str,
+    warnings: list[str],
 ) -> str:
     cur = config.get("currency_symbol", "¥")
     latest_date = max((f["latest_nav_date"] for f in funds if f["latest_nav_date"]), default="-")
     lag = config.get("confirm_lag", 2)
+    share_decimals = int(config.get("share_decimals", 2))
     src_map = {
         "eastmoney-lsjz": "天天基金历史净值列表接口",
         "eastmoney-f10-html": "天天基金 F10 历史净值页",
@@ -477,6 +516,12 @@ def render_readme(
     lines.append("")
     lines.append(f"**仓库**：{config['repo']}")
     lines.append("")
+    if warnings:
+        lines.append("> [!WARNING]")
+        lines.append("> **数据校验告警**")
+        for w in warnings:
+            lines.append(f"> - {w}")
+        lines.append("")
     lines.append("## 当前状态")
     lines.append("")
     lines.append(f"- **开始定投**：{config['start_date']}（持续定投，无终止日期）")
@@ -545,13 +590,19 @@ def render_readme(
     lines.append("2. **申购状态**：仅当该交易日「开放申购」时执行；公告「暂停申购」的交易日一律不执行。")
     lines.append("3. **申购时段**：交易日 9:30–15:00；15:00 前提交的申请视为当日（T 日）。")
     lines.append(f"4. **确认规则**：QDII 基金按 **T 日单位净值**确认份额，**T+{lag} 个交易日**确认。")
-    lines.append("5. **确认份额**：份额 = 定投金额 ÷ T 日单位净值。")
+    lines.append(
+        f"5. **份额计算**：净申购金额 = 定投金额 ÷ (1 + 申购费率)；"
+        f"份额 = 净申购金额 ÷ T 日单位净值，四舍五入保留 **{share_decimals} 位小数**。"
+    )
     lines.append("")
     for f in funds:
         limit = f.get("daily_limit")
         limit_txt = f"，单日累计购买上限 {cur}{limit:.0f}" if limit else ""
+        fee = f.get("purchase_fee_rate") or 0.0
+        fee_txt = "，免申购费" if not fee else f"，申购费率 {fee * 100:g}%"
         lines.append(
-            f"- {f['name']}（{f['code']}）：每个可申购交易日 {cur}{f['daily_amount']:.2f}{limit_txt}"
+            f"- {f['name']}（{f['code']}）：每个可申购交易日 {cur}{f['daily_amount']:.2f}"
+            f"{fee_txt}{limit_txt}"
         )
     lines.append(f"- 起投日：{config['start_date']}，无终止日期。")
     lines.append("")
@@ -625,10 +676,12 @@ def render_html(
     timeline: list[dict],
     status_sources: dict[str, str],
     updated: str,
+    warnings: list[str],
 ) -> str:
     cur = config.get("currency_symbol", "¥")
     latest_date = max((f["latest_nav_date"] for f in funds if f["latest_nav_date"]), default="-")
     lag = config.get("confirm_lag", 2)
+    share_decimals = int(config.get("share_decimals", 2))
     svg = render_curve_svg(timeline)
     skipped_all = aggregate_skipped(funds)
 
@@ -649,6 +702,15 @@ def render_html(
         f'<div class="card"><div class="k">{k}</div><div class="v {c}">{v}</div></div>'
         for k, v, c in cards
     )
+
+    warning_panel = ""
+    if warnings:
+        items = "".join(f"<li>{w}</li>" for w in warnings)
+        warning_panel = (
+            '<div class="panel" style="border-color:#fecdd3;background:#fff1f2">'
+            '<h2 style="color:#be123c">数据校验告警</h2>'
+            f'<div class="note" style="color:#9f1239"><ul>{items}</ul></div></div>'
+        )
 
     fund_rows = "".join(
         f"<tr><td>{f['short_name']}</td><td>{f['code']}</td>"
@@ -692,6 +754,7 @@ def render_html(
 
     rules = "".join(
         f"<li>{f['name']}（{f['code']}）：每个可申购交易日 {cur}{f['daily_amount']:.2f}"
+        + ("，免申购费" if not (f.get("purchase_fee_rate") or 0) else f"，申购费率 {f['purchase_fee_rate'] * 100:g}%")
         + (f"，单日累计购买上限 {cur}{f['daily_limit']:.0f}" if f.get("daily_limit") else "")
         + "</li>"
         for f in funds
@@ -712,6 +775,7 @@ def render_html(
     <a href="{config['repo']}">GitHub 仓库</a></div>
 
   <div class="cards">{card_html}</div>
+{warning_panel}
 
   <div class="panel">
     <h2>定投曲线</h2>
@@ -744,7 +808,7 @@ def render_html(
         <li>申购状态：仅当该交易日「开放申购」时执行；公告「暂停申购」的交易日一律不执行。</li>
         <li>申购时段：交易日 9:30–15:00；15:00 前提交的申请视为当日（T 日）。</li>
         <li>确认规则：QDII 基金按 <b>T 日单位净值</b>确认份额，<b>T+{lag} 个交易日</b>确认。</li>
-        <li>确认份额：份额 = 定投金额 ÷ T 日单位净值。</li>
+        <li>份额计算：净申购金额 = 定投金额 ÷ (1 + 申购费率)；份额 = 净申购金额 ÷ T 日单位净值，四舍五入保留 <b>{share_decimals} 位小数</b>。</li>
       </ol>
       <ul>
         {rules}
@@ -767,37 +831,66 @@ def main() -> int:
     config = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
     start_date = config["start_date"]
     confirm_lag = int(config.get("confirm_lag", 2))
+    share_decimals = int(config.get("share_decimals", 2))
     forced_suspended = set(config.get("suspended_dates") or [])
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
 
-    log(f"开始更新：起始日 {start_date}，份额确认 T+{confirm_lag}")
+    log(f"开始更新：起始日 {start_date}，份额确认 T+{confirm_lag}，份额保留 {share_decimals} 位小数")
 
     fund_results: list[dict] = []
     status_sources: dict[str, str] = {}
+    warnings: list[str] = []
     for fund_cfg in config["funds"]:
         code = fund_cfg["code"]
+        amt = float(fund_cfg["daily_amount"])
+        limit = fund_cfg.get("daily_limit")
+        floor = fund_cfg.get("min_amount")
+        if limit is not None and amt > float(limit):
+            warnings.append(f"{code} 每日定投 {amt:.2f} 超过单日累计购买上限 {float(limit):.2f}")
+        if floor is not None and amt < float(floor):
+            warnings.append(f"{code} 每日定投 {amt:.2f} 低于起投金额 {float(floor):.2f}")
+
         _, navs = fetch_fund_nav(code)
         status, src = fetch_status(code, start_date)
         status_sources[code] = src
-        result = compute_fund(fund_cfg, navs, start_date, status, forced_suspended, confirm_lag)
+        result = compute_fund(
+            fund_cfg, navs, start_date, status, forced_suspended, confirm_lag, share_decimals
+        )
         if result["skipped"]:
             days = ", ".join(s["date"] for s in result["skipped"])
             log(f"  {code} 跳过 {len(result['skipped'])} 个暂停申购日：{days}")
+        if result["verify"]:
+            v = result["verify"]
+            log(
+                f"  {code} 份额核对：{'✅ 一致' if v['ok'] else '❌ 不一致'}"
+                f"（脚本 {v['actual']} vs App {v['expected']}，差 {v['diff']:+}）"
+            )
+            if not v["ok"]:
+                warnings.append(
+                    f"{code} 计算份额 {v['actual']} 与 App 实际 {v['expected']} 不符"
+                    f"（差 {v['diff']:+}）"
+                )
         fund_results.append(result)
+
+    for w in warnings:
+        log(f"⚠️ 校验告警：{w}")
 
     timeline = build_timeline(fund_results)
 
     total = {
-        "daily_amount": round(sum(f["daily_amount"] for f in fund_results), 2),
+        "daily_amount": round_half_up(sum(f["daily_amount"] for f in fund_results), 2),
         "trading_days": max((f["trading_days"] for f in fund_results), default=0),
         "skipped_days": len(aggregate_skipped(fund_results)),
-        "invested": round(sum(f["invested"] for f in fund_results), 2),
-        "shares": round(sum(f["shares"] for f in fund_results), 6),
+        "invested": round_half_up(sum(f["invested"] for f in fund_results), 2),
+        "shares": round_half_up(sum(f["shares"] for f in fund_results), share_decimals),
+        "total_fee": round_half_up(sum(f["total_fee"] for f in fund_results), 2),
         # 组合市值按未取整数值求和，避免逐只取整后再相加产生 0.01 偏差
-        "market_value": round(sum(f["shares"] * f["latest_nav"] for f in fund_results), 2),
+        "market_value": round_half_up(
+            sum(f["shares"] * f["latest_nav"] for f in fund_results), 2
+        ),
     }
-    total["profit"] = round(total["market_value"] - total["invested"], 2)
+    total["profit"] = round_half_up(total["market_value"] - total["invested"], 2)
     total["return_rate"] = (
         round(total["profit"] / total["invested"], 6) if total["invested"] else 0.0
     )
@@ -805,9 +898,11 @@ def main() -> int:
     core = {
         "start_date": start_date,
         "confirm_lag": confirm_lag,
+        "share_decimals": share_decimals,
         "latest_nav_date": max((f["latest_nav_date"] for f in fund_results), default=""),
         "source": config["source"],
         "status_source": status_sources,
+        "warnings": warnings,
         "skipped_dates": aggregate_skipped(fund_results),
         "funds": [{k: v for k, v in f.items() if k != "daily"} for f in fund_results],
         "total": total,
@@ -837,11 +932,15 @@ def main() -> int:
     )
     (REPORTS_DIR / "curve.svg").write_text(render_curve_svg(timeline), encoding="utf-8")
     (REPORTS_DIR / "index.html").write_text(
-        render_html(config, fund_results, total, timeline, status_sources, display_updated),
+        render_html(
+            config, fund_results, total, timeline, status_sources, display_updated, warnings
+        ),
         encoding="utf-8",
     )
     (ROOT / "README.md").write_text(
-        render_readme(config, fund_results, total, timeline, status_sources, display_updated),
+        render_readme(
+            config, fund_results, total, timeline, status_sources, display_updated, warnings
+        ),
         encoding="utf-8",
     )
 
