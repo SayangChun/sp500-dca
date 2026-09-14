@@ -4,6 +4,7 @@
   "currency": "CNY",
   "currency_symbol": "¥",
   "repo": "https://github.com/SayangChun/sp500-dca",
+  "dashboard_url": "https://sayangchun.github.io/sp500-dca/",
   "source": "天天基金（东方财富）历史净值 + 申购状态",
   "source_url": "https://fund.eastmoney.com/",
   "confirm_lag": 2,

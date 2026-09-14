@@ -515,6 +515,8 @@ def render_readme(
     )
     lines.append("")
     lines.append(f"**仓库**：{config['repo']}")
+    if config.get("dashboard_url"):
+        lines.append(f"**在线看板**：{config['dashboard_url']}")
     lines.append("")
     if warnings:
         lines.append("> [!WARNING]")
@@ -772,7 +774,7 @@ def render_html(
 <div class="wrap">
   <h1>{config['title']}</h1>
   <div class="sub">起投 {config['start_date']} · 数据源：{config['source']} · 最后更新 {updated} ·
-    <a href="{config['repo']}">GitHub 仓库</a></div>
+    <a href="{config['repo']}">GitHub 仓库</a>{' · <a href="' + config['dashboard_url'] + '">本页永久链接</a>' if config.get('dashboard_url') else ''}</div>
 
   <div class="cards">{card_html}</div>
 {warning_panel}

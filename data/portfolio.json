@@ -1,13 +1,13 @@
 {
-  "updated_at": "2026-09-14T22:57:40+08:00",
+  "updated_at": "2026-09-14T23:02:53+08:00",
   "start_date": "2026-08-17",
   "confirm_lag": 2,
   "share_decimals": 2,
   "latest_nav_date": "2026-09-11",
   "source": "天天基金（东方财富）历史净值 + 申购状态",
   "status_source": {
-    "017641": "eastmoney-lsjz",
-    "019305": "eastmoney-lsjz"
+    "017641": "unavailable",
+    "019305": "unavailable"
   },
   "warnings": [],
   "skipped_dates": [
