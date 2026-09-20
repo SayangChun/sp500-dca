@@ -608,13 +608,20 @@ def render_readme(
         )
     lines.append(f"- 起投日：{config['start_date']}，无终止日期。")
     lines.append("")
+    lines.append("## 净值披露节奏")
+    lines.append("")
+    lines.append(
+        "- 基金净值通常为 **T+1 晚间**披露：净值日 D 的数据一般在 D+1 的 20:00~23:00（北京时间）才出现。"
+    )
+    lines.append("- 周末与节假日不产生净值，因此本仓库可能连续 2~3 天没有新提交，属正常现象。")
+    lines.append("")
     lines.append("## 数据与自动化")
     lines.append("")
     lines.append(f"- 净值数据源：{config['source']}（{config['source_url']}）")
     for f in funds:
         lines.append(f"  - {f['code']} 申购状态：{src_map.get(status_sources.get(f['code'], ''), '—')}")
-    lines.append("- 更新方式：GitHub Actions 定时任务，自动抓取净值与申购状态、重算持仓并提交结果。")
-    lines.append("- 看板页面：`reports/index.html`（可启用 GitHub Pages 在线查看）。")
+    lines.append("- 更新方式：GitHub Actions **每小时**轮询，自动抓取净值与申购状态、重算持仓并提交结果；数据无变化时不产生提交。")
+    lines.append("- 看板页面：`reports/index.html`（在线看板见上方链接）。")
     lines.append("")
     lines.append("---")
     lines.append(f"最后更新：{updated}")
@@ -816,7 +823,9 @@ def render_html(
         {rules}
         <li>起投日：{config['start_date']}，无终止日期。</li>
       </ul>
-      数据由 <code>scripts/update.py</code> 每日自动抓取并重算，GitHub Actions 提交更新。<br>
+      数据由 <code>scripts/update.py</code> 每小时自动抓取并重算，GitHub Actions 提交更新（数据无变化时不产生提交）。<br>
+      <b>净值披露节奏</b>：基金净值通常为 <b>T+1 晚间</b>披露 —— 净值日 D 的数据一般在 D+1 的 20:00~23:00 才出现；
+      周末与节假日不产生净值，所以看板可能连续 2~3 天没有变化，属正常现象。<br>
       本页面仅用于个人投资记录，不构成任何投资建议。
     </div>
   </div>
