@@ -1,5 +1,5 @@
 {
-  "updated_at": "2026-09-22T21:05:45+08:00",
+  "updated_at": "2026-09-23T01:56:41+08:00",
   "start_date": "2026-08-17",
   "confirm_lag": 2,
   "share_decimals": 2,
@@ -33,17 +33,17 @@
       "daily_amount": 9.99,
       "purchase_fee_rate": 0.0,
       "daily_limit": 10.0,
-      "trading_days": 24,
+      "trading_days": 25,
       "skipped_days": 1,
-      "shares": 140.81,
-      "invested": 239.76,
+      "shares": 146.62,
+      "invested": 249.75,
       "total_fee": 0.0,
-      "avg_cost": 1.7027,
-      "latest_nav": 1.6952,
-      "latest_nav_date": "2026-09-18",
-      "market_value": 238.7,
-      "profit": -1.06,
-      "return_rate": -0.004416,
+      "avg_cost": 1.7034,
+      "latest_nav": 1.7181,
+      "latest_nav_date": "2026-09-21",
+      "market_value": 251.91,
+      "profit": 2.16,
+      "return_rate": 0.00864,
       "verify": null,
       "skipped": [
         {
@@ -88,11 +88,11 @@
     "daily_amount": 19.99,
     "trading_days": 25,
     "skipped_days": 1,
-    "invested": 489.76,
-    "shares": 289.0,
+    "invested": 499.75,
+    "shares": 294.81,
     "total_fee": 0.0,
-    "market_value": 490.86,
-    "profit": 1.1,
-    "return_rate": 0.002246
+    "market_value": 504.07,
+    "profit": 4.32,
+    "return_rate": 0.008644
   }
 }
