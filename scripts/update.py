@@ -203,6 +203,67 @@ def fetch_status(code: str, start_date: str) -> tuple[dict[str, str], str]:
 # --------------------------------------------------------------------------- #
 # 定投计算
 # --------------------------------------------------------------------------- #
+def find_market_closed(
+    navs: list[tuple[str, float]], start_date: str, end_date: str
+) -> list[str]:
+    """找出 [start_date, end_date] 内「是工作日却没有净值」的日期，即市场休市日。
+
+    场外基金在非交易日不受理申购，因此这些日期既不会产生净值，也不会有定投记录；
+    如果只看净值序列，假期会从账面上「消失」。区间右端取最新净值日，
+    避免把「尚未披露的当天」误判成休市。
+    """
+    nav_days = {d for d, _ in navs}
+    out: list[str] = []
+    cursor = datetime.strptime(start_date, "%Y-%m-%d")
+    last = datetime.strptime(end_date, "%Y-%m-%d")
+    while cursor <= last:
+        day = cursor.strftime("%Y-%m-%d")
+        if cursor.weekday() < 5 and day not in nav_days:
+            out.append(day)
+        cursor += timedelta(days=1)
+    return out
+
+
+def group_consecutive(dates: list[str]) -> list[list[str]]:
+    """把日期分组为连续区间。
+
+    入参只含「休市的工作日」，但长假常跨周末（如国庆 10-01~10-07 中间夹着 10-03/10-04），
+    因此当两个日期之间只隔着周末时，也合并成同一段假期。
+    """
+    groups: list[list[str]] = []
+    for day in sorted(set(dates)):
+        cur = datetime.strptime(day, "%Y-%m-%d")
+        if groups:
+            prev = datetime.strptime(groups[-1][-1], "%Y-%m-%d")
+            gap = (cur - prev).days
+            if gap == 1 or (
+                gap <= 3
+                and all((prev + timedelta(days=k)).weekday() >= 5 for k in range(1, gap))
+            ):
+                groups[-1].append(day)
+                continue
+        groups.append([day])
+    return groups
+
+
+def aggregate_market_closed(funds: list[dict], holiday_names: dict) -> list[dict]:
+    """把各基金的休市日合并成假期区间（含 config 中登记的假期名称）。"""
+    dates = sorted({d for f in funds for d in f.get("market_closed", [])})
+    items: list[dict] = []
+    for group in group_consecutive(dates):
+        start, end = group[0], group[-1]
+        items.append(
+            {
+                "start": start,
+                "end": end,
+                "span": start if start == end else f"{start} ~ {end}",
+                "name": (holiday_names or {}).get(start, ""),
+                "weekdays": len(group),
+            }
+        )
+    return items
+
+
 def compute_fund(
     fund_cfg: dict,
     navs: list[tuple[str, float]],
@@ -280,6 +341,11 @@ def compute_fund(
 
     total_fee = round_half_up(sum(d["fee"] for d in daily), 2)
 
+    # 工作日却没有净值 = 市场休市日（法定节假日），当日基金不受理申购
+    market_closed = find_market_closed(
+        navs, start_date, daily[-1]["date"] if daily else start_date
+    )
+
     # 可选：与用户 App 中的实际份额核对
     expected = fund_cfg.get("verify_shares")
     verify = None
@@ -314,6 +380,7 @@ def compute_fund(
         "verify": verify,
         "daily": daily,
         "skipped": skipped,
+        "market_closed": market_closed,
     }
 
 
@@ -505,6 +572,7 @@ def render_readme(
         "unavailable": "未获取到（使用已知暂停申购日兜底）",
     }
     skipped_all = aggregate_skipped(funds)
+    closed_all = aggregate_market_closed(funds, config.get("holiday_names") or {})
 
     lines: list[str] = []
     lines.append(f"# {config['title']}")
@@ -585,6 +653,18 @@ def render_readme(
         for s in skipped_all:
             navs = " / ".join(f"{k} {v:.4f}" for k, v in s["navs"].items())
             lines.append(f"| {s['date']} | {s['status']} | {'、'.join(s['funds'])} | {navs} |")
+        lines.append("")
+    if closed_all:
+        lines.append("## 休市日说明")
+        lines.append("")
+        lines.append(
+            "以下工作日为**法定节假日休市**（非交易日），场外基金不受理申购，当日定投未执行："
+        )
+        lines.append("")
+        lines.append("| 日期 | 假期 | 休市工作日 |")
+        lines.append("|:---|:---|---:|")
+        for c in closed_all:
+            lines.append(f"| {c['span']} | {c['name'] or '休市'} | {c['weekdays']} 天 |")
         lines.append("")
     lines.append("## 定投规则（按境内基金实际开放申购口径）")
     lines.append("")
@@ -693,6 +773,7 @@ def render_html(
     share_decimals = int(config.get("share_decimals", 2))
     svg = render_curve_svg(timeline)
     skipped_all = aggregate_skipped(funds)
+    closed_all = aggregate_market_closed(funds, config.get("holiday_names") or {})
 
     def cls(v: float) -> str:
         return "up" if v > 0 else ("down" if v < 0 else "")
@@ -707,6 +788,8 @@ def render_html(
     ]
     if skipped_all:
         cards.append(("暂停申购跳过", f"{len(skipped_all)} 天", ""))
+    if closed_all:
+        cards.append(("节假日休市", f"{sum(c['weekdays'] for c in closed_all)} 天", ""))
     card_html = "".join(
         f'<div class="card"><div class="k">{k}</div><div class="v {c}">{v}</div></div>'
         for k, v, c in cards
@@ -761,6 +844,22 @@ def render_html(
     </table>
   </div>"""
 
+    closed_panel = ""
+    if closed_all:
+        rows = "".join(
+            f"<tr><td>{c['span']}</td><td>{c['name'] or '休市'}</td>"
+            f"<td>{c['weekdays']} 天</td></tr>"
+            for c in closed_all
+        )
+        closed_panel = f"""
+  <div class="panel">
+    <h2>休市日说明（法定节假日，非交易日，不受理申购）</h2>
+    <table>
+      <thead><tr><th>日期</th><th>假期</th><th>休市工作日</th></tr></thead>
+      <tbody>{rows}</tbody>
+    </table>
+  </div>"""
+
     rules = "".join(
         f"<li>{f['name']}（{f['code']}）：每个可申购交易日 {cur}{f['daily_amount']:.2f}"
         + ("，免申购费" if not (f.get("purchase_fee_rate") or 0) else f"，申购费率 {f['purchase_fee_rate'] * 100:g}%")
@@ -809,6 +908,7 @@ def render_html(
     </table>
   </div>
 {skipped_panel}
+{closed_panel}
   <div class="panel">
     <h2>定投规则（按境内基金实际开放申购口径）</h2>
     <div class="note">
@@ -915,6 +1015,9 @@ def main() -> int:
         "status_source": status_sources,
         "warnings": warnings,
         "skipped_dates": aggregate_skipped(fund_results),
+        "market_closed": aggregate_market_closed(
+            fund_results, config.get("holiday_names") or {}
+        ),
         "funds": [{k: v for k, v in f.items() if k != "daily"} for f in fund_results],
         "total": total,
     }

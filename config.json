@@ -10,6 +10,10 @@
   "confirm_lag": 2,
   "share_decimals": 2,
   "suspended_dates": ["2026-09-07"],
+  "holiday_names": {
+    "2026-09-25": "中秋节",
+    "2026-10-01": "国庆节"
+  },
   "funds": [
     {
       "code": "017641",
