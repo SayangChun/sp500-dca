@@ -208,5 +208,11 @@
     "invested": 699.65,
     "market_value": 706.97,
     "profit": 7.32
+  },
+  {
+    "date": "2026-10-14",
+    "invested": 719.64,
+    "market_value": 718.89,
+    "profit": -0.75
   }
 ]
