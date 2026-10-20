@@ -1,9 +1,9 @@
 {
-  "updated_at": "2026-10-20T03:00:08+08:00",
+  "updated_at": "2026-10-20T21:20:25+08:00",
   "start_date": "2026-08-17",
   "confirm_lag": 2,
   "share_decimals": 2,
-  "latest_nav_date": "2026-10-16",
+  "latest_nav_date": "2026-10-19",
   "source": "天天基金（东方财富）历史净值 + 申购状态",
   "status_source": {
     "017641": "eastmoney-lsjz",
@@ -86,17 +86,17 @@
       "daily_amount": 10.0,
       "purchase_fee_rate": 0.0,
       "daily_limit": 10.0,
-      "trading_days": 38,
+      "trading_days": 39,
       "skipped_days": 1,
-      "shares": 225.04,
-      "invested": 380.0,
+      "shares": 230.99,
+      "invested": 390.0,
       "total_fee": 0.0,
-      "avg_cost": 1.6886,
-      "latest_nav": 1.6732,
-      "latest_nav_date": "2026-10-16",
-      "market_value": 376.54,
-      "profit": -3.46,
-      "return_rate": -0.009113,
+      "avg_cost": 1.6884,
+      "latest_nav": 1.6796,
+      "latest_nav_date": "2026-10-19",
+      "market_value": 387.97,
+      "profit": -2.03,
+      "return_rate": -0.005203,
       "verify": null,
       "skipped": [
         {
@@ -118,13 +118,13 @@
   ],
   "total": {
     "daily_amount": 19.99,
-    "trading_days": 38,
+    "trading_days": 39,
     "skipped_days": 1,
-    "invested": 759.62,
-    "shares": 447.7,
+    "invested": 769.62,
+    "shares": 453.65,
     "total_fee": 0.0,
-    "market_value": 752.77,
-    "profit": -6.85,
-    "return_rate": -0.009018
+    "market_value": 764.2,
+    "profit": -5.42,
+    "return_rate": -0.007042
   }
 }
