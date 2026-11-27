@@ -1,5 +1,5 @@
 {
-  "updated_at": "2026-11-27T04:55:26+08:00",
+  "updated_at": "2026-11-27T21:28:37+08:00",
   "start_date": "2026-08-17",
   "confirm_lag": 2,
   "share_decimals": 2,
@@ -21,6 +21,18 @@
       "navs": {
         "摩根标普500 A": 1.7152,
         "摩根标普500 C": 1.6989
+      }
+    },
+    {
+      "date": "2026-11-26",
+      "status": "暂停申购",
+      "funds": [
+        "摩根标普500 A",
+        "摩根标普500 C"
+      ],
+      "navs": {
+        "摩根标普500 A": 1.5898,
+        "摩根标普500 C": 1.5736
       }
     }
   ],
@@ -50,7 +62,7 @@
       "purchase_fee_rate": 0.0,
       "daily_limit": 10.0,
       "trading_days": 66,
-      "skipped_days": 1,
+      "skipped_days": 2,
       "shares": 391.74,
       "invested": 659.34,
       "total_fee": 0.0,
@@ -65,6 +77,12 @@
         {
           "date": "2026-09-07",
           "nav": 1.7152,
+          "status": "暂停申购",
+          "reason": "基金当日暂停申购，定投未执行"
+        },
+        {
+          "date": "2026-11-26",
+          "nav": 1.5898,
           "status": "暂停申购",
           "reason": "基金当日暂停申购，定投未执行"
         }
@@ -87,7 +105,7 @@
       "purchase_fee_rate": 0.0,
       "daily_limit": 10.0,
       "trading_days": 66,
-      "skipped_days": 1,
+      "skipped_days": 2,
       "shares": 396.04,
       "invested": 660.0,
       "total_fee": 0.0,
@@ -102,6 +120,12 @@
         {
           "date": "2026-09-07",
           "nav": 1.6989,
+          "status": "暂停申购",
+          "reason": "基金当日暂停申购，定投未执行"
+        },
+        {
+          "date": "2026-11-26",
+          "nav": 1.5736,
           "status": "暂停申购",
           "reason": "基金当日暂停申购，定投未执行"
         }
@@ -119,7 +143,7 @@
   "total": {
     "daily_amount": 19.99,
     "trading_days": 66,
-    "skipped_days": 1,
+    "skipped_days": 2,
     "invested": 1319.34,
     "shares": 787.78,
     "total_fee": 0.0,
